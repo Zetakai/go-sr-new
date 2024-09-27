@@ -75,6 +75,7 @@
     <div id="url-form">
         <input type="text" id="new-url" placeholder="Enter YouTube URL" />
         <button onclick="addURL()">Add URL</button>
+        <button onclick="skipSong()">Skip Song</button>
     </div>
 
     <!-- List of URLs stored in the database -->
@@ -114,7 +115,7 @@
         function onPlayerReady(event) {
             console.log('Player is ready');
             playerInitialized = true; // Mark the player as initialized
-            getOldestURLAndDelete(); // Play the first URL when the player is ready
+            playNextInQueue(); // Play the first URL in the queue without deleting it
         }
 
         // Player state change event handler
@@ -123,7 +124,7 @@
                 isPlaying = true;
             } else if (event.data === YT.PlayerState.ENDED) {
                 isPlaying = false; // Set to false when video ends
-                getOldestURLAndDelete(); // Play the next oldest URL
+                skipSong(); // Play the next video in the queue when the current video ends
             }
         }
 
@@ -145,9 +146,9 @@
                         urlList.appendChild(div);
                     });
 
-                    // If the player is not currently playing, start the first video
+                    // If the player is not currently playing and not initialized, start the first video
                     if (!isPlaying && data.length > 0 && !playerInitialized) {
-                        playVideo(data[0].url); // Play the first URL only if the player is not initialized
+                        playVideo(data[0].url);
                     }
                 })
                 .catch(err => console.error('Error fetching URLs:', err));
@@ -201,8 +202,20 @@
             }
         }
 
+        // Function to play the next video in the queue without deleting it
+        function playNextInQueue() {
+            fetch('/url/oldest')
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.url) {
+                        playVideo(data.url); // Play the oldest URL
+                    }
+                })
+                .catch(err => console.error('Error getting the oldest URL:', err));
+        }
+
         // Function to get the oldest URL, delete it, and play it
-        function getOldestURLAndDelete() {
+        function skipSong() {
             fetch('/url/oldest')
                 .then(response => response.json())
                 .then(data => {
