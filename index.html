@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -65,9 +66,14 @@
             width: 100%;
             height: 450px;
         }
+
+        .reload {
+            font-family: Lucida Sans Unicode
+        }
     </style>
     <script src="https://www.youtube.com/iframe_api"></script> <!-- YouTube Player API -->
 </head>
+
 <body>
     <h1>Song Requests Manager</h1>
 
@@ -76,6 +82,7 @@
         <input type="text" id="new-url" placeholder="Enter YouTube URL" />
         <button onclick="addURL()">Add URL</button>
         <button onclick="skipSong()">Skip Song</button>
+        <button onclick="fetchURLs()">Reload Queue</button>
     </div>
 
     <!-- List of URLs stored in the database -->
@@ -235,4 +242,5 @@
         }
     </script>
 </body>
+
 </html>
