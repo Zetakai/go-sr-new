@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Song Requests Manager</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        #url-form {
+            margin-bottom: 20px;
+        }
+
+        #url-form input[type="text"] {
+            width: 80%;
+            padding: 10px;
+            margin-right: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        #url-form button {
+            padding: 10px 15px;
+            border: none;
+            background-color: #28a745;
+            color: #fff;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        #url-list {
+            margin-top: 20px;
+        }
+
+        .url-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: #fff;
+            border: 1px solid #ddd;
+            margin-bottom: 5px;
+        }
+
+        .url-item button {
+            padding: 5px 10px;
+            border: none;
+            background-color: #dc3545;
+            color: #fff;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        iframe {
+            margin-top: 20px;
+            border: none;
+            width: 100%;
+            height: 450px;
+        }
+    </style>
+    <script src="https://www.youtube.com/iframe_api"></script> <!-- YouTube Player API -->
+</head>
+<body>
+    <h1>Song Requests Manager</h1>
+
+    <!-- Form to add new YouTube URL -->
+    <div id="url-form">
+        <input type="text" id="new-url" placeholder="Enter YouTube URL" />
+        <button onclick="addURL()">Add URL</button>
+    </div>
+
+    <!-- List of URLs stored in the database -->
+    <div id="url-list">
+        <h2>Queue</h2>
+        <div id="urls"></div>
+    </div>
+
+    <!-- YouTube Player to autoplay videos -->
+    <div id="player-container">
+        <div id="player"></div> <!-- YouTube player div to be replaced by iframe -->
+    </div>
+
+    <script>
+        let player;
+        let currentVideoID = ""; // To store the currently playing video ID
+        let playerInitialized = false; // Flag to check if player has been initialized
+        let isPlaying = false; // Flag to check if a video is currently playing
+
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchURLs(); // Fetch the URLs when the page loads
+        });
+
+        // Load the YouTube Player API and initialize the player
+        window.onYouTubeIframeAPIReady = () => {
+            player = new YT.Player('player', {
+                height: '450',
+                width: '100%',
+                events: {
+                    'onReady': onPlayerReady,
+                    'onStateChange': onPlayerStateChange
+                }
+            });
+        };
+
+        // Player ready event handler
+        function onPlayerReady(event) {
+            console.log('Player is ready');
+            playerInitialized = true; // Mark the player as initialized
+            getOldestURLAndDelete(); // Play the first URL when the player is ready
+        }
+
+        // Player state change event handler
+        function onPlayerStateChange(event) {
+            if (event.data === YT.PlayerState.PLAYING) {
+                isPlaying = true;
+            } else if (event.data === YT.PlayerState.ENDED) {
+                isPlaying = false; // Set to false when video ends
+                getOldestURLAndDelete(); // Play the next oldest URL
+            }
+        }
+
+        // Function to fetch all URLs from the server
+        function fetchURLs() {
+            fetch('/urls')
+                .then(response => response.json())
+                .then(data => {
+                    const urlList = document.getElementById('urls');
+                    urlList.innerHTML = ''; // Clear previous URLs
+
+                    data.forEach(urlObj => {
+                        const div = document.createElement('div');
+                        div.className = 'url-item';
+                        div.innerHTML = `
+                            <span>${urlObj.url}</span>
+                            <button onclick="deleteURL('${urlObj.url}')">Delete</button>
+                        `;
+                        urlList.appendChild(div);
+                    });
+
+                    // If the player is not currently playing, start the first video
+                    if (!isPlaying && data.length > 0 && !playerInitialized) {
+                        playVideo(data[0].url); // Play the first URL only if the player is not initialized
+                    }
+                })
+                .catch(err => console.error('Error fetching URLs:', err));
+        }
+
+        // Function to add a new URL
+        function addURL() {
+            const url = document.getElementById('new-url').value;
+            if (url === '') return;
+
+            fetch('/url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url })
+            })
+                .then(response => {
+                    if (response.ok) {
+                        document.getElementById('new-url').value = ''; // Clear input
+                        fetchURLs(); // Refresh the URL list without affecting the player
+                    } else {
+                        alert('Error adding URL. Make sure it is a valid YouTube URL.');
+                    }
+                })
+                .catch(err => console.error('Error adding URL:', err));
+        }
+
+        // Function to delete a URL
+        function deleteURL(url) {
+            fetch('/url', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url })
+            })
+                .then(response => {
+                    if (response.ok) {
+                        fetchURLs(); // Refresh the URL list without affecting the player
+                    } else {
+                        alert('Error deleting URL.');
+                    }
+                })
+                .catch(err => console.error('Error deleting URL:', err));
+        }
+
+        // Function to play a YouTube video
+        function playVideo(url) {
+            const videoID = extractVideoID(url);
+            if (videoID && player) {
+                player.loadVideoById(videoID); // Load and play the video
+                currentVideoID = videoID;
+                isPlaying = true;
+            }
+        }
+
+        // Function to get the oldest URL, delete it, and play it
+        function getOldestURLAndDelete() {
+            fetch('/url/oldest')
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.url) {
+                        playVideo(data.url); // Play the oldest URL
+                        fetchURLs(); // Refresh the URL list
+                    }
+                })
+                .catch(err => console.error('Error getting the oldest URL:', err));
+        }
+
+        // Function to extract the video ID from a YouTube URL
+        function extractVideoID(url) {
+            const regex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+            const match = url.match(regex);
+            return match ? match[1] : null;
+        }
+    </script>
+</body>
+</html>
