@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"log"
 	"net/http"
 	"regexp"
@@ -19,7 +18,6 @@ type YouTubeURL struct {
 }
 
 var db *sql.DB
-var tmpl = template.Must(template.ParseFiles("index.html"))
 
 func main() {
 	// Initialize database
@@ -29,7 +27,8 @@ func main() {
 	r := mux.NewRouter()
 
 	// Define routes
-	r.HandleFunc("/", indexHandler).Methods("GET")
+	r.HandleFunc("/", requesterHandler).Methods("GET")
+	r.HandleFunc("/host", hostHandler).Methods("GET")
 	r.HandleFunc("/url", addURL).Methods("POST")
 	r.HandleFunc("/url", deleteURL).Methods("DELETE") // Delete by URL
 	r.HandleFunc("/url/oldest", getOldestURLAndDelete).Methods("GET")
@@ -42,8 +41,8 @@ func main() {
 	r.PathPrefix("/").Handler(http.StripPrefix("/", staticFileServer))
 
 	// Start server
-	log.Println("Starting server on :8080")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	log.Println("Starting server on http://localhost:420/")
+	log.Fatal(http.ListenAndServe(":420", r))
 }
 
 func initDB() {
@@ -66,9 +65,13 @@ func initDB() {
 	}
 }
 
-// Handler to render the index page
-func indexHandler(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "index.html")
+// Handler to render the host page
+func hostHandler(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "host.html")
+}
+
+func requesterHandler(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "requester.html")
 }
 
 func addURL(w http.ResponseWriter, r *http.Request) {
