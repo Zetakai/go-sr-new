@@ -6,57 +6,66 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"regexp"
+	"net/url"
+	"os"
 
+	"github.com/go-resty/resty/v2"
 	"github.com/gorilla/mux"
+	"github.com/joho/godotenv"
 	_ "modernc.org/sqlite"
 )
 
 type YouTubeURL struct {
-	ID  int    `json:"id"`
-	URL string `json:"url"`
+	ID    int    `json:"id"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 var db *sql.DB
+var apiKey string
 
 func main() {
-	// Initialize database
+	// Load environment variables from .env
+	if err := godotenv.Load(); err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
+	// Ensure the API key is available
+	apiKey = os.Getenv("YOUTUBE_API_KEY")
+	if apiKey == "" {
+		log.Fatal("YOUTUBE_API_KEY not found in environment")
+	}
+
 	initDB()
 
-	// Initialize router
+	// Initialize the router
 	r := mux.NewRouter()
-
-	// Define routes
 	r.HandleFunc("/", requesterHandler).Methods("GET")
 	r.HandleFunc("/host", hostHandler).Methods("GET")
 	r.HandleFunc("/url", addURL).Methods("POST")
-	r.HandleFunc("/url", deleteURL).Methods("DELETE") // Delete by URL
+	r.HandleFunc("/url", deleteURL).Methods("DELETE")
 	r.HandleFunc("/url/oldest", getOldestURLAndDelete).Methods("GET")
 	r.HandleFunc("/urls", getAllURLs).Methods("GET")
 
-	// Serve the static HTML file and other assets like CSS/JS files
+	// Serve static files
 	staticDir := http.Dir("./")
-	staticFileServer := http.FileServer(staticDir)
+	r.PathPrefix("/").Handler(http.FileServer(staticDir))
 
-	r.PathPrefix("/").Handler(http.StripPrefix("/", staticFileServer))
-
-	// Start server
 	log.Println("Starting server on http://localhost:420/")
 	log.Fatal(http.ListenAndServe(":420", r))
 }
 
 func initDB() {
 	var err error
-	// Open SQLite database
 	db, err = sql.Open("sqlite", "./youtube_urls.db")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Create table if it doesn't exist
 	createTable := `
 	CREATE TABLE IF NOT EXISTS youtube_urls (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		title TEXT NOT NULL,
 		url TEXT NOT NULL UNIQUE
 	);`
 	_, err = db.Exec(createTable)
@@ -65,45 +74,46 @@ func initDB() {
 	}
 }
 
-// Handler to render the host page
-func hostHandler(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "host.html")
-}
-
 func requesterHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "requester.html")
+}
+
+func hostHandler(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "host.html")
 }
 
 func addURL(w http.ResponseWriter, r *http.Request) {
 	var youtubeURL YouTubeURL
 	err := json.NewDecoder(r.Body).Decode(&youtubeURL)
-	if err != nil {
+	if err != nil || youtubeURL.Title == "" {
 		http.Error(w, "Invalid request payload", http.StatusBadRequest)
 		return
 	}
 
-	// Validate the URL
-	if !isValidYouTubeURL(youtubeURL.URL) {
-		http.Error(w, "Invalid YouTube URL", http.StatusBadRequest)
+	actualTitle, matchedURL, err := findClosestYouTubeMatch(youtubeURL.Title)
+	if err != nil {
+		http.Error(w, "Error finding YouTube match", http.StatusInternalServerError)
 		return
 	}
 
-	// Insert URL into the database if it doesn't already exist
-	stmt, err := db.Prepare("INSERT INTO youtube_urls (url) VALUES (?)")
+	youtubeURL.Title = actualTitle
+	youtubeURL.URL = matchedURL
+
+	stmt, err := db.Prepare("INSERT INTO youtube_urls (title, url) VALUES (?, ?)")
 	if err != nil {
 		http.Error(w, "Error preparing query", http.StatusInternalServerError)
 		return
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(youtubeURL.URL)
+	_, err = stmt.Exec(youtubeURL.Title, youtubeURL.URL)
 	if err != nil {
 		http.Error(w, "URL already exists or error inserting URL", http.StatusConflict)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	fmt.Fprintf(w, "URL added successfully")
+	fmt.Fprintf(w, "Song added successfully: %s", youtubeURL.Title)
 }
 
 func deleteURL(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +124,6 @@ func deleteURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete URL by matching the exact URL
 	stmt, err := db.Prepare("DELETE FROM youtube_urls WHERE url = ?")
 	if err != nil {
 		http.Error(w, "Error preparing query", http.StatusInternalServerError)
@@ -140,29 +149,24 @@ func deleteURL(w http.ResponseWriter, r *http.Request) {
 
 func getOldestURLAndDelete(w http.ResponseWriter, r *http.Request) {
 	var youtubeURL YouTubeURL
-
-	// Select the oldest URL (the one with the smallest ID)
-	err := db.QueryRow("SELECT id, url FROM youtube_urls ORDER BY id ASC LIMIT 1").Scan(&youtubeURL.ID, &youtubeURL.URL)
+	err := db.QueryRow("SELECT id, title, url FROM youtube_urls ORDER BY id ASC LIMIT 1").Scan(&youtubeURL.ID, &youtubeURL.Title, &youtubeURL.URL)
 	if err != nil {
 		http.Error(w, "No URL found", http.StatusNotFound)
 		return
 	}
 
-	// Delete the oldest URL after retrieving it
 	err = deleteURLByID(youtubeURL.ID)
 	if err != nil {
 		http.Error(w, "Error deleting URL", http.StatusInternalServerError)
 		return
 	}
 
-	// Return the oldest URL
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(youtubeURL)
 }
 
-// Return all URLs in an array
 func getAllURLs(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT id, url FROM youtube_urls")
+	rows, err := db.Query("SELECT id, title, url FROM youtube_urls")
 	if err != nil {
 		http.Error(w, "Error fetching URLs", http.StatusInternalServerError)
 		return
@@ -170,10 +174,9 @@ func getAllURLs(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	var urls []YouTubeURL
-
 	for rows.Next() {
 		var youtubeURL YouTubeURL
-		err := rows.Scan(&youtubeURL.ID, &youtubeURL.URL)
+		err := rows.Scan(&youtubeURL.ID, &youtubeURL.Title, &youtubeURL.URL)
 		if err != nil {
 			http.Error(w, "Error scanning URL", http.StatusInternalServerError)
 			return
@@ -185,12 +188,47 @@ func getAllURLs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(urls)
 }
 
-// Validates if the URL is a valid YouTube URL
-func isValidYouTubeURL(url string) bool {
-	// Simple regex to match YouTube URLs
-	regex := `^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+$`
-	re := regexp.MustCompile(regex)
-	return re.MatchString(url)
+func findClosestYouTubeMatch(query string) (string, string, error) {
+	client := resty.New()
+
+	baseURL := "https://www.googleapis.com/youtube/v3/search"
+	params := url.Values{}
+	params.Set("part", "snippet")
+	params.Set("q", query)
+	params.Set("type", "video")
+	params.Set("maxResults", "1")
+	params.Set("key", apiKey)
+
+	resp, err := client.R().
+		SetQueryString(params.Encode()).
+		Get(baseURL)
+
+	if err != nil {
+		return "", "", fmt.Errorf("failed to perform request: %w", err)
+	}
+
+	if resp.StatusCode() != 200 {
+		return "", "", fmt.Errorf("unexpected status code: %d", resp.StatusCode())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+		return "", "", fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	items, ok := result["items"].([]interface{})
+	if !ok || len(items) == 0 {
+		return "", "", fmt.Errorf("no matching videos found")
+	}
+
+	snippet := items[0].(map[string]interface{})["snippet"].(map[string]interface{})
+	videoID := items[0].(map[string]interface{})["id"].(map[string]interface{})["videoId"].(string)
+
+	title := snippet["title"].(string)
+	videoURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s", videoID)
+
+	log.Printf("Found video: %s (%s)", title, videoURL)
+	return title, videoURL, nil
 }
 
 func deleteURLByID(id int) error {

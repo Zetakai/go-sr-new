@@ -59,57 +59,50 @@
             cursor: pointer;
             border-radius: 4px;
         }
-
-        iframe {
-            margin-top: 20px;
-            border: none;
-            width: 100%;
-            height: 450px;
-        }
-
-        .reload {
-            font-family: Lucida Sans Unicode
-        }
     </style>
-    <script src="https://www.youtube.com/iframe_api"></script> <!-- YouTube Player API -->
 </head>
 
 <body>
     <h1>Song Request</h1>
 
-    <!-- Form to add new YouTube URL -->
+    <!-- Form to add new song title -->
     <div id="url-form">
-        <input type="text" id="new-url" placeholder="Enter YouTube URL" />
-        <button onclick="addURL()">Add URL</button>
+        <input type="text" id="new-url" placeholder="Enter song title" />
+        <button onclick="addURL()">Add Song</button>
         <button onclick="fetchURLs()">Reload Queue</button>
     </div>
 
-    <!-- List of URLs stored in the database -->
+    <!-- List of song titles stored in the database -->
     <div id="url-list">
         <h2>Queue</h2>
         <div id="urls"></div>
     </div>
 
     <script>
-
         document.addEventListener('DOMContentLoaded', () => {
             fetchURLs(); // Fetch the URLs when the page loads
+
+            // Add song by pressing Enter
+            document.getElementById('new-url').addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') {
+                    addURL();
+                }
+            });
         });
 
-
-        // Function to fetch all URLs from the server
+        // Fetch all songs from the server
         function fetchURLs() {
             fetch('/urls')
                 .then(response => response.json())
                 .then(data => {
                     const urlList = document.getElementById('urls');
-                    urlList.innerHTML = ''; // Clear previous URLs
+                    urlList.innerHTML = ''; // Clear previous entries
 
                     data.forEach(urlObj => {
                         const div = document.createElement('div');
                         div.className = 'url-item';
                         div.innerHTML = `
-                            <span>${urlObj.url}</span>
+                            <span>${urlObj.title}</span>
                             <button onclick="deleteURL('${urlObj.url}')">Delete</button>
                         `;
                         urlList.appendChild(div);
@@ -118,28 +111,28 @@
                 .catch(err => console.error('Error fetching URLs:', err));
         }
 
-        // Function to add a new URL
+        // Add a new song by title
         function addURL() {
-            const url = document.getElementById('new-url').value;
-            if (url === '') return;
+            const title = document.getElementById('new-url').value;
+            if (title === '') return;
 
             fetch('/url', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url })
+                body: JSON.stringify({ title })
             })
                 .then(response => {
                     if (response.ok) {
-                        document.getElementById('new-url').value = ''; // Clear input
-                        fetchURLs(); // Refresh the URL list without affecting the player
+                        document.getElementById('new-url').value = ''; // Clear input field
+                        fetchURLs(); // Refresh the song list
                     } else {
-                        alert('Error adding URL. Make sure it is a valid YouTube URL.');
+                        alert('Error adding song.');
                     }
                 })
-                .catch(err => console.error('Error adding URL:', err));
+                .catch(err => console.error('Error adding song:', err));
         }
 
-        // Function to delete a URL
+        // Delete a song by URL
         function deleteURL(url) {
             fetch('/url', {
                 method: 'DELETE',
@@ -148,19 +141,12 @@
             })
                 .then(response => {
                     if (response.ok) {
-                        fetchURLs(); // Refresh the URL list without affecting the player
+                        fetchURLs(); // Refresh the song list
                     } else {
-                        alert('Error deleting URL.');
+                        alert('Error deleting song.');
                     }
                 })
-                .catch(err => console.error('Error deleting URL:', err));
-        }
-
-        // Function to extract the video ID from a YouTube URL
-        function extractVideoID(url) {
-            const regex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
-            const match = url.match(regex);
-            return match ? match[1] : null;
+                .catch(err => console.error('Error deleting song:', err));
         }
     </script>
 </body>
