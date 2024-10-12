@@ -66,18 +66,13 @@
             width: 100%;
             height: 450px;
         }
-
-        .reload {
-            font-family: Lucida Sans Unicode;
-        }
     </style>
-    <script src="https://www.youtube.com/iframe_api"></script> <!-- YouTube Player API -->
+    <script src="https://www.youtube.com/iframe_api"></script>
 </head>
 
 <body>
     <h1>Song Requests Manager</h1>
 
-    <!-- Form to add new song title -->
     <div id="url-form">
         <input type="text" id="new-url" placeholder="Enter song title" />
         <button onclick="addURL()">Add Song</button>
@@ -85,55 +80,70 @@
         <button onclick="fetchURLs()">Reload Queue</button>
     </div>
 
-    <!-- List of song titles stored in the database -->
     <div id="url-list">
         <h2>Queue</h2>
         <div id="urls"></div>
     </div>
 
-    <!-- YouTube Player to autoplay videos -->
     <div id="player-container">
-        <div id="player"></div> <!-- YouTube player div to be replaced by iframe -->
+        <div id="player"></div>
     </div>
 
     <script>
         let player;
-        let currentVideoID = "";
-        let playerInitialized = false;
         let isPlaying = false;
+        let playerInitialized = false;
+        let queueLoaded = false; // New flag to track queue initialization
 
         document.addEventListener('DOMContentLoaded', () => {
+            if (window.YT && window.YT.Player) {
+                // If API is already loaded, initialize the player directly
+                initializePlayer();
+            } else {
+                // Wait for the YouTube API to load
+                window.onYouTubeIframeAPIReady = initializePlayer;
+            }
+
             fetchURLs();
             document.getElementById('new-url').addEventListener('keypress', function (e) {
-                if (e.key === 'Enter') {
-                    addURL(); // Add song when Enter is pressed
-                }
+                if (e.key === 'Enter') addURL();
             });
         });
 
-        window.onYouTubeIframeAPIReady = () => {
+        function initializePlayer() {
+            if (player) player.destroy(); // Clean up any previous instance
+
             player = new YT.Player('player', {
                 height: '450',
                 width: '100%',
                 events: {
                     'onReady': onPlayerReady,
-                    'onStateChange': onPlayerStateChange
+                    'onStateChange': onPlayerStateChange,
+                    'onError': handlePlayerError
                 }
             });
-        };
-
-        function onPlayerReady(event) {
             playerInitialized = true;
-            playNextInQueue();
+        }
+
+        function onPlayerReady() {
+            if (!queueLoaded) { // Prevent playing twice on initialization
+                playNextInQueue();
+                queueLoaded = true;
+            }
         }
 
         function onPlayerStateChange(event) {
-            if (event.data === YT.PlayerState.PLAYING) {
-                isPlaying = true;
-            } else if (event.data === YT.PlayerState.ENDED) {
+            if (event.data === YT.PlayerState.ENDED) {
                 isPlaying = false;
                 skipSong();
+            } else if (event.data === YT.PlayerState.PLAYING) {
+                isPlaying = true;
             }
+        }
+
+        function handlePlayerError(event) {
+            console.error('YouTube Player error:', event.data);
+            initializePlayer(); // Re-initialize the player on error
         }
 
         function fetchURLs() {
@@ -153,7 +163,7 @@
                         urlList.appendChild(div);
                     });
 
-                    if (!isPlaying && data.length > 0 && !playerInitialized) {
+                    if (!isPlaying && data.length > 0&& !playerInitialized) {
                         playVideo(data[0].url);
                     }
                 })
@@ -162,7 +172,7 @@
 
         function addURL() {
             const title = document.getElementById('new-url').value;
-            if (title === '') return;
+            if (!title) return;
 
             fetch('/url', {
                 method: 'POST',
@@ -187,11 +197,8 @@
                 body: JSON.stringify({ url })
             })
                 .then(response => {
-                    if (response.ok) {
-                        fetchURLs();
-                    } else {
-                        alert('Error deleting song.');
-                    }
+                    if (response.ok) fetchURLs();
+                    else alert('Error deleting song.');
                 })
                 .catch(err => console.error('Error deleting song:', err));
         }
@@ -200,7 +207,6 @@
             const videoID = extractVideoID(url);
             if (videoID && player) {
                 player.loadVideoById(videoID);
-                currentVideoID = videoID;
                 isPlaying = true;
             }
         }
@@ -209,9 +215,7 @@
             fetch('/url/oldest')
                 .then(response => response.json())
                 .then(data => {
-                    if (data && data.url) {
-                        playVideo(data.url);
-                    }
+                    if (data && data.url) playVideo(data.url);
                 })
                 .catch(err => console.error('Error getting the oldest URL:', err));
         }
@@ -225,7 +229,7 @@
                         fetchURLs();
                     }
                 })
-                .catch(err => console.error('Error getting the oldest URL:', err));
+                .catch(err => console.error('Error skipping song:', err));
         }
 
         function extractVideoID(url) {
