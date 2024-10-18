@@ -21,7 +21,7 @@
         }
 
         #url-form input[type="text"] {
-            width: 80%;
+            width: 70%;
             padding: 10px;
             margin-right: 10px;
             border: 1px solid #ddd;
@@ -35,6 +35,7 @@
             color: #fff;
             cursor: pointer;
             border-radius: 4px;
+            margin-right: 5px;
         }
 
         #url-list {
@@ -59,11 +60,65 @@
             cursor: pointer;
             border-radius: 4px;
         }
+
+        /* Modal Styles */
+        .modal {
+            display: none; /* Hidden by default */
+            position: fixed; /* Stay in place */
+            z-index: 1; /* Sit on top */
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto; /* Enable scroll if needed */
+            background-color: rgba(0, 0, 0, 0.5); /* Black w/ opacity */
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto; /* 15% from the top and centered */
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-width: 400px; /* Could be more or less, depending on screen size */
+            border-radius: 5px;
+        }
+
+        .modal-content input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        .modal-content button {
+            width: 100%;
+            padding: 10px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        #logout-button {
+            padding: 10px 15px;
+            border: none;
+            background-color: #ffc107;
+            color: #333;
+            cursor: pointer;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
     </style>
 </head>
 
 <body>
     <h1>Song Request</h1>
+
+    <!-- Logout Button -->
+    <button id="logout-button" style="display: none;" onclick="logout()">Logout</button>
 
     <!-- Form to add new song title -->
     <div id="url-form">
@@ -78,8 +133,19 @@
         <div id="urls"></div>
     </div>
 
+    <!-- User Login Modal -->
+    <div id="login-modal" class="modal">
+        <div class="modal-content">
+            <h2>Welcome!</h2>
+            <p>Please enter your information to continue:</p>
+            <input type="text" id="username" placeholder="Enter your username" required />
+            <button onclick="saveUser()">Submit</button>
+        </div>
+    </div>
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
+            checkUser(); // Check if user info is stored
             fetchURLs(); // Fetch the URLs when the page loads
 
             // Add song by pressing Enter
@@ -89,6 +155,43 @@
                 }
             });
         });
+
+        // Check if user info exists in localStorage
+        function checkUser() {
+            const user = localStorage.getItem('user');
+            if (!user) {
+                // Show login modal
+                document.getElementById('login-modal').style.display = 'block';
+            } else {
+                // Show logout button
+                document.getElementById('logout-button').style.display = 'inline-block';
+            }
+        }
+
+        // Save user info to localStorage
+        function saveUser() {
+            const username = document.getElementById('username').value.trim();
+
+            if (username === '') {
+                alert('Please enter username.');
+                return;
+            }
+
+            const user = { username };
+            localStorage.setItem('user', JSON.stringify(user));
+
+            // Hide modal and show logout button
+            document.getElementById('login-modal').style.display = 'none';
+            document.getElementById('logout-button').style.display = 'inline-block';
+        }
+
+        // Logout function to clear localStorage
+        function logout() {
+            localStorage.removeItem('user');
+            document.getElementById('logout-button').style.display = 'none';
+            // Optionally, you can also clear the URL list or reset the form
+            fetchURLs();
+        }
 
         // Fetch all songs from the server
         function fetchURLs() {
@@ -102,7 +205,7 @@
                         const div = document.createElement('div');
                         div.className = 'url-item';
                         div.innerHTML = `
-                            <span>${urlObj.title}</span>
+                            <span><strong>${urlObj.user}</strong> - ${urlObj.title}</span>
                             <button onclick="deleteURL('${urlObj.url}')">Delete</button>
                         `;
                         urlList.appendChild(div);
@@ -113,20 +216,39 @@
 
         // Add a new song by title
         function addURL() {
-            const title = document.getElementById('new-url').value;
-            if (title === '') return;
+            const title = document.getElementById('new-url').value.trim();
+            if (title === '') {
+                alert('Please enter a song title.');
+                return;
+            }
+
+            const user = JSON.parse(localStorage.getItem('user'));
+            if (!user) {
+                alert('User information not found. Please log in again.');
+                return;
+            }
+
+            const payload = {
+                title: title,
+                user: user.username // You can choose to send username or email
+            };
 
             fetch('/url', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title })
+                body: JSON.stringify(payload)
             })
                 .then(response => {
                     if (response.ok) {
                         document.getElementById('new-url').value = ''; // Clear input field
                         fetchURLs(); // Refresh the song list
-                    } else {
-                        alert('Error adding song.');
+                    }
+                     else if (response.status === 409) {
+                        console.log(response)
+                        alert('This song has already been requested.');
+                    } 
+                    else {
+                        response.text().then(text => alert(`Error adding song: ${text}`));
                     }
                 })
                 .catch(err => console.error('Error adding song:', err));
@@ -143,7 +265,7 @@
                     if (response.ok) {
                         fetchURLs(); // Refresh the song list
                     } else {
-                        alert('Error deleting song.');
+                        response.text().then(text => alert(`Error deleting song: ${text}`));
                     }
                 })
                 .catch(err => console.error('Error deleting song:', err));

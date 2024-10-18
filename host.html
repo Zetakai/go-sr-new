@@ -157,7 +157,7 @@
                         const div = document.createElement('div');
                         div.className = 'url-item';
                         div.innerHTML = `
-                            <span>${urlObj.title}</span>
+                            <span><strong>${urlObj.user}</strong> - ${urlObj.title}</span>
                             <button onclick="deleteURL('${urlObj.url}')">Delete</button>
                         `;
                         urlList.appendChild(div);
@@ -177,7 +177,7 @@
             fetch('/url', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title })
+                body: JSON.stringify({ title, user: "Jeyhan" })
             })
                 .then(response => {
                     if (response.ok) {
