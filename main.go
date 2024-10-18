@@ -151,7 +151,7 @@ func deleteURL(w http.ResponseWriter, r *http.Request) {
 
 func getOldestURLAndDelete(w http.ResponseWriter, r *http.Request) {
 	var youtubeURL YouTubeURL
-	err := db.QueryRow("SELECT id, title, url, user FROM youtube_urls ORDER BY id ASC LIMIT 1").Scan(&youtubeURL.ID, &youtubeURL.Title, &youtubeURL.URL)
+	err := db.QueryRow("SELECT id, title, url, user FROM youtube_urls ORDER BY id ASC LIMIT 1").Scan(&youtubeURL.ID, &youtubeURL.Title, &youtubeURL.URL, &youtubeURL.User)
 	if err != nil {
 		http.Error(w, "No URL found", http.StatusNotFound)
 		return
