@@ -19,6 +19,7 @@ type YouTubeURL struct {
 	ID    int    `json:"id"`
 	Title string `json:"title"`
 	URL   string `json:"url"`
+	User  string `json:"user"`
 }
 
 var db *sql.DB
@@ -66,7 +67,8 @@ func initDB() {
 	CREATE TABLE IF NOT EXISTS youtube_urls (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		title TEXT NOT NULL,
-		url TEXT NOT NULL UNIQUE
+		url TEXT NOT NULL UNIQUE,
+		user TEXT NOT NULL
 	);`
 	_, err = db.Exec(createTable)
 	if err != nil {
@@ -85,7 +87,7 @@ func hostHandler(w http.ResponseWriter, r *http.Request) {
 func addURL(w http.ResponseWriter, r *http.Request) {
 	var youtubeURL YouTubeURL
 	err := json.NewDecoder(r.Body).Decode(&youtubeURL)
-	if err != nil || youtubeURL.Title == "" {
+	if err != nil || youtubeURL.Title == "" || youtubeURL.User == "" {
 		http.Error(w, "Invalid request payload", http.StatusBadRequest)
 		return
 	}
@@ -99,21 +101,21 @@ func addURL(w http.ResponseWriter, r *http.Request) {
 	youtubeURL.Title = actualTitle
 	youtubeURL.URL = matchedURL
 
-	stmt, err := db.Prepare("INSERT INTO youtube_urls (title, url) VALUES (?, ?)")
+	stmt, err := db.Prepare("INSERT INTO youtube_urls (title, url, user) VALUES (?, ?, ?)")
 	if err != nil {
 		http.Error(w, "Error preparing query", http.StatusInternalServerError)
 		return
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(youtubeURL.Title, youtubeURL.URL)
+	_, err = stmt.Exec(youtubeURL.Title, youtubeURL.URL, youtubeURL.User)
 	if err != nil {
 		http.Error(w, "URL already exists or error inserting URL", http.StatusConflict)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	fmt.Fprintf(w, "Song added successfully: %s", youtubeURL.Title)
+	fmt.Fprintf(w, "Song added successfully: %s by %s", youtubeURL.Title, youtubeURL.User)
 }
 
 func deleteURL(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +151,7 @@ func deleteURL(w http.ResponseWriter, r *http.Request) {
 
 func getOldestURLAndDelete(w http.ResponseWriter, r *http.Request) {
 	var youtubeURL YouTubeURL
-	err := db.QueryRow("SELECT id, title, url FROM youtube_urls ORDER BY id ASC LIMIT 1").Scan(&youtubeURL.ID, &youtubeURL.Title, &youtubeURL.URL)
+	err := db.QueryRow("SELECT id, title, url, user FROM youtube_urls ORDER BY id ASC LIMIT 1").Scan(&youtubeURL.ID, &youtubeURL.Title, &youtubeURL.URL)
 	if err != nil {
 		http.Error(w, "No URL found", http.StatusNotFound)
 		return
@@ -166,7 +168,7 @@ func getOldestURLAndDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func getAllURLs(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT id, title, url FROM youtube_urls")
+	rows, err := db.Query("SELECT id, title, url, user FROM youtube_urls")
 	if err != nil {
 		http.Error(w, "Error fetching URLs", http.StatusInternalServerError)
 		return
@@ -176,7 +178,7 @@ func getAllURLs(w http.ResponseWriter, r *http.Request) {
 	var urls []YouTubeURL
 	for rows.Next() {
 		var youtubeURL YouTubeURL
-		err := rows.Scan(&youtubeURL.ID, &youtubeURL.Title, &youtubeURL.URL)
+		err := rows.Scan(&youtubeURL.ID, &youtubeURL.Title, &youtubeURL.URL, &youtubeURL.User)
 		if err != nil {
 			http.Error(w, "Error scanning URL", http.StatusInternalServerError)
 			return
