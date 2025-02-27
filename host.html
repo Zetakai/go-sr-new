@@ -34,6 +34,7 @@
         color: #fff;
         cursor: pointer;
         border-radius: 4px;
+        margin-right: 5px;
       }
 
       #url-list {
@@ -48,6 +49,11 @@
         background: #fff;
         border: 1px solid #ddd;
         margin-bottom: 5px;
+      }
+
+      .recommended {
+        background-color: #f8f9fa;
+        border-left: 3px solid #007bff;
       }
 
       .url-item button {
@@ -92,14 +98,13 @@
       let player;
       let isPlaying = false;
       let playerInitialized = false;
-      let queueLoaded = false; // New flag to track queue initialization
+      let queueLoaded = false;
+      let requestingRecommendation = false;
 
       document.addEventListener("DOMContentLoaded", () => {
         if (window.YT && window.YT.Player) {
-          // If API is already loaded, initialize the player directly
           initializePlayer();
         } else {
-          // Wait for the YouTube API to load
           window.onYouTubeIframeAPIReady = initializePlayer;
         }
 
@@ -112,7 +117,7 @@
       });
 
       function initializePlayer() {
-        if (player) player.destroy(); // Clean up any previous instance
+        if (player) player.destroy();
 
         player = new YT.Player("player", {
           height: "450",
@@ -128,7 +133,6 @@
 
       function onPlayerReady() {
         if (!queueLoaded) {
-          // Prevent playing twice on initialization
           playNextInQueue();
           queueLoaded = true;
         }
@@ -145,7 +149,7 @@
 
       function handlePlayerError(event) {
         console.error("YouTube Player error:", event.data);
-        initializePlayer(); // Re-initialize the player on error
+        skipSong();
       }
 
       function fetchURLs() {
@@ -158,18 +162,67 @@
             data.forEach((urlObj) => {
               const div = document.createElement("div");
               div.className = "url-item";
+              if (urlObj.user === "Recommended") {
+                div.className += " recommended";
+              }
               div.innerHTML = `
-                            <span><strong>${urlObj.user}</strong> - ${urlObj.title}</span>
-                            <button onclick="deleteURL('${urlObj.url}')">Delete</button>
-                        `;
+                <span><strong>${urlObj.user}</strong> - ${urlObj.title}</span>
+                <button onclick="deleteURL('${urlObj.url}')">Delete</button>
+              `;
               urlList.appendChild(div);
             });
 
-            if (!isPlaying && data.length > 0 && !playerInitialized) {
-              playVideo(data[0].url);
+            // If the queue is empty and we're not already getting a recommendation
+            if (data.length === 0 && !requestingRecommendation) {
+              getAndAddRecommendation();
             }
           })
           .catch((err) => console.error("Error fetching URLs:", err));
+      }
+
+      function getAndAddRecommendation() {
+        // Prevent multiple simultaneous requests
+        if (requestingRecommendation) return;
+        
+        requestingRecommendation = true;
+        
+        fetch("/recommendation")
+          .then((response) => response.json())
+          .then((data) => {
+            if (data && data.url) {
+              // Directly add the recommendation to the queue
+              addRecommendationToQueue(data);
+            }
+          })
+          .catch((err) => {
+            console.error("Error getting recommendation:", err);
+          })
+          .finally(() => {
+            requestingRecommendation = false;
+          });
+      }
+
+      function addRecommendationToQueue(recommendation) {
+        fetch("/url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            title: recommendation.title,
+            url: recommendation.url,
+            user: "Recommended"
+          }),
+        })
+        .then((response) => {
+          if (response.ok) {
+            fetchURLs();
+            
+            // If nothing is playing, start playing
+            if (!isPlaying && playerInitialized) {
+              playNextInQueue();
+            }
+          }
+        })
+        .catch((err) => console.error("Error adding recommendation to queue:", err));
       }
 
       function addURL() {
@@ -185,6 +238,11 @@
             if (response.ok) {
               document.getElementById("new-url").value = "";
               fetchURLs();
+              
+              // If nothing is playing, play the song that was just added
+              if (!isPlaying && playerInitialized) {
+                playNextInQueue();
+              }
             } else {
               alert("Error adding song.");
             }
@@ -215,23 +273,27 @@
 
       function playNextInQueue() {
         fetch("/url/oldest")
-          .then((response) => response.json())
-          .then((data) => {
-            if (data && data.url) playVideo(data.url);
+          .then((response) => {
+            if (!response.ok) {
+              // If no songs in queue, get a recommendation and add to queue
+              getAndAddRecommendation();
+              throw new Error("No songs in queue");
+            }
+            return response.json();
           })
-          .catch((err) => console.error("Error getting the oldest URL:", err));
-      }
-
-      function skipSong() {
-        fetch("/url/oldest")
-          .then((response) => response.json())
           .then((data) => {
             if (data && data.url) {
               playVideo(data.url);
               fetchURLs();
             }
           })
-          .catch((err) => console.error("Error skipping song:", err));
+          .catch((err) => {
+            console.log("Error or empty queue:", err.message);
+          });
+      }
+
+      function skipSong() {
+        playNextInQueue();
       }
 
       function extractVideoID(url) {

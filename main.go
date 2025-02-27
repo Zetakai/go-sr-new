@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/gorilla/mux"
@@ -22,8 +25,11 @@ type YouTubeURL struct {
 	User  string `json:"user"`
 }
 
-var db *sql.DB
-var apiKey string
+var (
+	db                  *sql.DB
+	apiKey              string
+	lastRecommendations []string // Store the last recommended video IDs to avoid repetition
+)
 
 func main() {
 	// Load environment variables from .env
@@ -47,6 +53,7 @@ func main() {
 	r.HandleFunc("/url", deleteURL).Methods("DELETE")
 	r.HandleFunc("/url/oldest", getOldestURLAndDelete).Methods("GET")
 	r.HandleFunc("/urls", getAllURLs).Methods("GET")
+	r.HandleFunc("/recommendation", getRecommendedVideo).Methods("GET")
 
 	// Serve static files
 	staticDir := http.Dir("./")
@@ -87,8 +94,35 @@ func hostHandler(w http.ResponseWriter, r *http.Request) {
 func addURL(w http.ResponseWriter, r *http.Request) {
 	var youtubeURL YouTubeURL
 	err := json.NewDecoder(r.Body).Decode(&youtubeURL)
-	if err != nil || youtubeURL.Title == "" || youtubeURL.User == "" {
+	if err != nil {
 		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		return
+	}
+
+	// Check if this is a direct URL addition (from recommendation)
+	if youtubeURL.URL != "" && youtubeURL.Title != "" && youtubeURL.User != "" {
+		// Just insert the provided URL directly
+		stmt, err := db.Prepare("INSERT INTO youtube_urls (title, url, user) VALUES (?, ?, ?)")
+		if err != nil {
+			http.Error(w, "Error preparing query", http.StatusInternalServerError)
+			return
+		}
+		defer stmt.Close()
+
+		_, err = stmt.Exec(youtubeURL.Title, youtubeURL.URL, youtubeURL.User)
+		if err != nil {
+			http.Error(w, "URL already exists or error inserting URL", http.StatusConflict)
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, "Song added successfully: %s by %s", youtubeURL.Title, youtubeURL.User)
+		return
+	}
+
+	// Otherwise, this is a title-based addition
+	if youtubeURL.Title == "" || youtubeURL.User == "" {
+		http.Error(w, "Invalid request payload - missing title or user", http.StatusBadRequest)
 		return
 	}
 
@@ -242,4 +276,174 @@ func deleteURLByID(id int) error {
 
 	_, err = stmt.Exec(id)
 	return err
+}
+
+// Updated recommendation function with more variety
+func getRecommendedVideo(w http.ResponseWriter, r *http.Request) {
+	// Get the most recently played video ID (if any)
+	var lastVideo YouTubeURL
+	err := db.QueryRow("SELECT id, title, url, user FROM youtube_urls ORDER BY id DESC LIMIT 1").Scan(&lastVideo.ID, &lastVideo.Title, &lastVideo.URL, &lastVideo.User)
+
+	// Default search queries for variety when no specific relatedness is available
+	searchQueries := []string{
+		"popular music",
+		"trending songs",
+		"top hits",
+		"indie music",
+		"recommended playlist",
+		"viral songs",
+		"new music releases",
+		"best music today",
+	}
+
+	// Randomly select a search query if we need to use one
+	rand.Seed(time.Now().UnixNano())
+	searchQuery := searchQueries[rand.Intn(len(searchQueries))]
+
+	// Number of results to request (we'll pick one randomly)
+	maxResults := "10"
+
+	client := resty.New()
+	baseURL := "https://www.googleapis.com/youtube/v3/search"
+	params := url.Values{}
+	params.Set("part", "snippet")
+	params.Set("type", "video")
+	params.Set("videoCategoryId", "10") // 10 is for Music category
+	params.Set("maxResults", maxResults)
+	params.Set("key", apiKey)
+
+	// If we have a previous video, try to get related content
+	if err == nil && lastVideo.URL != "" {
+		videoID := extractVideoID(lastVideo.URL)
+		if videoID != "" {
+			params.Set("relatedToVideoId", videoID)
+
+			resp, err := client.R().
+				SetQueryString(params.Encode()).
+				Get(baseURL)
+
+			if err == nil && resp.StatusCode() == 200 {
+				var result map[string]interface{}
+				if err := json.Unmarshal(resp.Body(), &result); err == nil {
+					items, ok := result["items"].([]interface{})
+					if ok && len(items) > 0 {
+						// We have results, pick a random one that hasn't been recommended recently
+						recommendation := getRandomRecommendation(items)
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(recommendation)
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// If relation-based search failed or no previous video exists,
+	// search by a random query term
+	params.Del("relatedToVideoId") // Remove the related parameter
+	params.Set("q", searchQuery)
+
+	resp, err := client.R().
+		SetQueryString(params.Encode()).
+		Get(baseURL)
+
+	if err != nil || resp.StatusCode() != 200 {
+		http.Error(w, "Error finding recommendation", http.StatusInternalServerError)
+		return
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+		http.Error(w, "Error parsing recommendation results", http.StatusInternalServerError)
+		return
+	}
+
+	items, ok := result["items"].([]interface{})
+	if !ok || len(items) == 0 {
+		http.Error(w, "No recommendations found", http.StatusNotFound)
+		return
+	}
+
+	// Get a random recommendation
+	recommendation := getRandomRecommendation(items)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(recommendation)
+}
+
+// Helper function to select a random recommendation from search results
+func getRandomRecommendation(items []interface{}) YouTubeURL {
+	// Max number of IDs to store in lastRecommendations
+	const maxLastRecommendations = 20
+
+	// Collect all valid items that haven't been recommended recently
+	var validItems []interface{}
+
+	for _, item := range items {
+		// Extract the video ID
+		videoID, ok := item.(map[string]interface{})["id"].(map[string]interface{})["videoId"].(string)
+		if !ok || videoID == "" {
+			continue
+		}
+
+		// Check if this video was recently recommended
+		alreadyRecommended := false
+		for _, lastID := range lastRecommendations {
+			if lastID == videoID {
+				alreadyRecommended = true
+				break
+			}
+		}
+
+		if !alreadyRecommended {
+			validItems = append(validItems, item)
+		}
+	}
+
+	// If all results were recently recommended, use all items
+	if len(validItems) == 0 {
+		validItems = items
+	}
+
+	// Select a random item
+	randomIndex := rand.Intn(len(validItems))
+	selectedItem := validItems[randomIndex]
+
+	snippet := selectedItem.(map[string]interface{})["snippet"].(map[string]interface{})
+	videoID := selectedItem.(map[string]interface{})["id"].(map[string]interface{})["videoId"].(string)
+
+	title := snippet["title"].(string)
+	videoURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s", videoID)
+
+	// Add this video ID to lastRecommendations
+	lastRecommendations = append(lastRecommendations, videoID)
+
+	// Keep lastRecommendations at a reasonable size
+	if len(lastRecommendations) > maxLastRecommendations {
+		// Remove the oldest recommendations
+		lastRecommendations = lastRecommendations[len(lastRecommendations)-maxLastRecommendations:]
+	}
+
+	return YouTubeURL{
+		Title: title,
+		URL:   videoURL,
+		User:  "Recommended",
+	}
+}
+
+// Helper function to extract YouTube video ID from URL
+func extractVideoID(url string) string {
+	// Simple extraction, can be improved with regex for robustness
+	if strings.Contains(url, "v=") {
+		parts := strings.Split(url, "v=")
+		if len(parts) > 1 {
+			idParts := strings.Split(parts[1], "&")
+			return idParts[0]
+		}
+	} else if strings.Contains(url, "youtu.be/") {
+		parts := strings.Split(url, "youtu.be/")
+		if len(parts) > 1 {
+			return parts[1]
+		}
+	}
+	return ""
 }
