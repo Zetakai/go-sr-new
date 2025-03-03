@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -81,6 +82,27 @@ func initDB() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// Create a new table to track recommended videos
+	createRecommendationsTable := `
+	CREATE TABLE IF NOT EXISTS recommended_videos (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		video_id TEXT NOT NULL UNIQUE,
+		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`
+	_, err = db.Exec(createRecommendationsTable)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Add index for faster queries
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_video_id ON recommended_videos(video_id);")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Initialize lastRecommendations from database
+	loadRecentRecommendationsFromDB()
 }
 
 func requesterHandler(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +300,44 @@ func deleteURLByID(id int) error {
 	return err
 }
 
-// Updated recommendation function with more variety
+func loadRecentRecommendationsFromDB() {
+	// Clear current in-memory list
+	lastRecommendations = []string{}
+
+	// Get recommendations from the last 7 days
+	rows, err := db.Query("SELECT video_id FROM recommended_videos WHERE timestamp > datetime('now', '-7 day') ORDER BY timestamp DESC LIMIT 100")
+	if err != nil {
+		log.Printf("Error loading recommendations from DB: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var videoID string
+		if err := rows.Scan(&videoID); err == nil {
+			lastRecommendations = append(lastRecommendations, videoID)
+		}
+	}
+
+	log.Printf("Loaded %d recent recommendations from database", len(lastRecommendations))
+}
+
+// Function to store a recommendation in the database
+func storeRecommendationInDB(videoID string) {
+	// First, attempt to insert the video ID
+	_, err := db.Exec("INSERT OR IGNORE INTO recommended_videos (video_id) VALUES (?)", videoID)
+	if err != nil {
+		log.Printf("Error storing recommendation in DB: %v", err)
+	}
+
+	// Then clean up old recommendations (keep only last 200)
+	_, err = db.Exec("DELETE FROM recommended_videos WHERE id NOT IN (SELECT id FROM recommended_videos ORDER BY timestamp DESC LIMIT 200)")
+	if err != nil {
+		log.Printf("Error cleaning up old recommendations: %v", err)
+	}
+}
+
+// Modify the getRecommendedVideo function
 func getRecommendedVideo(w http.ResponseWriter, r *http.Request) {
 	// Get the most recently played video ID (if any)
 	var lastVideo YouTubeURL
@@ -286,22 +345,25 @@ func getRecommendedVideo(w http.ResponseWriter, r *http.Request) {
 
 	// Default search queries for variety when no specific relatedness is available
 	searchQueries := []string{
-		"popular music",
-		"trending songs",
-		"top hits",
-		"indie music",
-		"recommended playlist",
-		"viral songs",
-		"new music releases",
-		"best music today",
+		"official music",
+	}
+
+	// Avoid compilation keywords
+	compilationKeywords := []string{
+		"compilation", "playlist", "mix", "mashup", "megamix",
+		"collection", "best of", "top 10", "top 20", "medley",
+		"hits of", "greatest hits", "hour", "complete album",
+		"songs", "tracks", "compilation", "non stop", "nonstop",
+		"back to back", "b2b", "music collection", "jukeboxes", "jukebox",
+		"all songs", "audio songs", "video songs", "chart", "songs",
 	}
 
 	// Randomly select a search query if we need to use one
 	rand.Seed(time.Now().UnixNano())
 	searchQuery := searchQueries[rand.Intn(len(searchQueries))]
 
-	// Number of results to request (we'll pick one randomly)
-	maxResults := "10"
+	// Number of results to request - increased for more variety
+	maxResults := "25" // Increased from 10 to 25
 
 	client := resty.New()
 	baseURL := "https://www.googleapis.com/youtube/v3/search"
@@ -311,30 +373,48 @@ func getRecommendedVideo(w http.ResponseWriter, r *http.Request) {
 	params.Set("videoCategoryId", "10") // 10 is for Music category
 	params.Set("maxResults", maxResults)
 	params.Set("key", apiKey)
+	params.Set("relevanceLanguage", "en") // Prefer English content
+	params.Set("videoDuration", "short")  // Prefer shorter videos (more likely single songs)
 
 	// If we have a previous video, try to get related content
 	if err == nil && lastVideo.URL != "" {
 		videoID := extractVideoID(lastVideo.URL)
 		if videoID != "" {
-			params.Set("relatedToVideoId", videoID)
+			// 70% chance to get a related video, 30% chance to get a random one
+			useRelated := rand.Float32() < 0.7
 
-			resp, err := client.R().
-				SetQueryString(params.Encode()).
-				Get(baseURL)
+			if useRelated {
+				params.Set("relatedToVideoId", videoID)
 
-			if err == nil && resp.StatusCode() == 200 {
-				var result map[string]interface{}
-				if err := json.Unmarshal(resp.Body(), &result); err == nil {
-					items, ok := result["items"].([]interface{})
-					if ok && len(items) > 0 {
-						// We have results, pick a random one that hasn't been recommended recently
-						recommendation := getRandomRecommendation(items)
-						w.Header().Set("Content-Type", "application/json")
-						json.NewEncoder(w).Encode(recommendation)
-						return
+				resp, err := client.R().
+					SetQueryString(params.Encode()).
+					Get(baseURL)
+
+				if err == nil && resp.StatusCode() == 200 {
+					var result map[string]interface{}
+					if err := json.Unmarshal(resp.Body(), &result); err == nil {
+						items, ok := result["items"].([]interface{})
+						if ok && len(items) > 0 {
+							// We have results, filter and pick a random one
+							filteredItems := filterCompilations(items, compilationKeywords)
+							if len(filteredItems) > 0 {
+								recommendation := getRandomRecommendation(filteredItems)
+
+								// Store the recommendation in database
+								videoID := extractVideoID(recommendation.URL)
+								if videoID != "" {
+									storeRecommendationInDB(videoID)
+								}
+
+								w.Header().Set("Content-Type", "application/json")
+								json.NewEncoder(w).Encode(recommendation)
+								return
+							}
+						}
 					}
 				}
 			}
+			// If useRelated is false or if related search failed, we'll fall through to random search
 		}
 	}
 
@@ -364,10 +444,154 @@ func getRecommendedVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Filter items to exclude compilations
+	filteredItems := filterCompilations(items, compilationKeywords)
+	if len(filteredItems) == 0 {
+		// Instead of using all items, get a random subset to avoid repeating the same songs
+		if len(items) > 5 {
+			// Shuffle the items
+			rand.Shuffle(len(items), func(i, j int) {
+				items[i], items[j] = items[j], items[i]
+			})
+			// Take just a few
+			filteredItems = items[:5]
+		} else {
+			filteredItems = items
+		}
+	}
+
 	// Get a random recommendation
-	recommendation := getRandomRecommendation(items)
+	recommendation := getRandomRecommendation(filteredItems)
+
+	// Store the recommendation in database
+	videoID := extractVideoID(recommendation.URL)
+	if videoID != "" {
+		storeRecommendationInDB(videoID)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(recommendation)
+}
+
+// Helper function for min value
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+var excludedKeywords = []string{
+	"indian", "hindi", "bollywood", "tamil", "telugu", "punjabi",
+	"bhangra", "desi", "carnatic", "bharatanatyam",
+}
+
+// Helper function to filter out compilations/playlists and excluded content
+func filterCompilations(items []interface{}, compilationKeywords []string) []interface{} {
+	var filteredItems []interface{}
+
+	// Get the excluded keywords from the global variable
+	excludedKeywords := excludedKeywords // Using the globally defined excluded keywords
+
+	for _, item := range items {
+		snippet, ok := item.(map[string]interface{})["snippet"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Extract title, description and channel title
+		title, titleOk := snippet["title"].(string)
+		description, descOk := snippet["description"].(string)
+		channelTitle, channelOk := snippet["channelTitle"].(string)
+
+		if !titleOk {
+			continue
+		}
+
+		// Check if this is likely a compilation or excluded content
+		shouldFilter := false
+
+		// Convert to lowercase for case-insensitive matching
+		titleLower := strings.ToLower(title)
+
+		// Check title length - extremely long titles often indicate compilations
+		if len(titleLower) > 70 {
+			// Long titles are more suspicious, check more carefully
+			wordCount := len(strings.Fields(titleLower))
+			if wordCount > 10 {
+				// Lots of words often means a compilation listing multiple songs
+				shouldFilter = true
+			}
+		}
+
+		// Check for compilation keywords in title
+		if !shouldFilter {
+			for _, keyword := range compilationKeywords {
+				if strings.Contains(titleLower, strings.ToLower(keyword)) {
+					shouldFilter = true
+					break
+				}
+			}
+		}
+
+		// Check for excluded keywords in title
+		if !shouldFilter {
+			for _, keyword := range excludedKeywords {
+				if strings.Contains(titleLower, strings.ToLower(keyword)) {
+					shouldFilter = true
+					break
+				}
+			}
+		}
+
+		// Check channel title for excluded keywords
+		if !shouldFilter && channelOk {
+			channelLower := strings.ToLower(channelTitle)
+			for _, keyword := range excludedKeywords {
+				if strings.Contains(channelLower, strings.ToLower(keyword)) {
+					shouldFilter = true
+					break
+				}
+			}
+		}
+
+		// Check for durations in title (like "10 minutes", "1 hour", etc.)
+		if !shouldFilter && (strings.Contains(titleLower, "minute") ||
+			strings.Contains(titleLower, "hour") ||
+			regexp.MustCompile(`\d+\s*min`).MatchString(titleLower)) {
+			shouldFilter = true
+		}
+
+		// Also check description if available
+		if !shouldFilter && descOk {
+			descLower := strings.ToLower(description)
+
+			// Check for compilation keywords in description
+			for _, keyword := range compilationKeywords {
+				if strings.Contains(descLower, strings.ToLower(keyword)) {
+					shouldFilter = true
+					break
+				}
+			}
+
+			// Check for excluded keywords in description
+			if !shouldFilter {
+				for _, keyword := range excludedKeywords {
+					if strings.Contains(descLower, strings.ToLower(keyword)) {
+						shouldFilter = true
+						break
+					}
+				}
+			}
+		}
+
+		// If it passed all the filters, add it to filtered items
+		if !shouldFilter {
+			filteredItems = append(filteredItems, item)
+		}
+	}
+
+	return filteredItems
 }
 
 // Helper function to select a random recommendation from search results
